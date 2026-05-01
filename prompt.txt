@@ -1,0 +1,292 @@
+You are an expert Python engineer. Build a complete, production-quality 
+Tool-Calling AI Agent from scratch using the Anthropic Python SDK. 
+This is for an internship task requiring: function calling, JSON response 
+formatting, and robust error handling. Build EVERYTHING described below 
+with zero placeholders.
+
+═══════════════════════════════════════════════════════════
+SECTION 1 — PROJECT STRUCTURE
+═══════════════════════════════════════════════════════════
+
+Create this exact directory layout:
+
+task1_tool_agent/
+├── main.py              # Entry point / CLI loop
+├── agent.py             # Core agent class with tool-calling loop
+├── tools.py             # All tool definitions + implementations
+├── schemas.py           # JSON schemas for all tools
+├── response_models.py   # Pydantic models for structured output
+├── error_handler.py     # Centralized error handling logic
+├── logger.py            # Colored console logger
+├── .env.example         # Template for environment variables
+├── requirements.txt     # All dependencies pinned
+└── README.md            # Setup + usage instructions
+
+═══════════════════════════════════════════════════════════
+SECTION 2 — DEPENDENCIES (requirements.txt)
+═══════════════════════════════════════════════════════════
+
+anthropic>=0.25.0
+pydantic>=2.0.0
+python-dotenv>=1.0.0
+rich>=13.0.0
+requests>=2.31.0
+
+═══════════════════════════════════════════════════════════
+SECTION 3 — TOOLS TO IMPLEMENT (tools.py + schemas.py)
+═══════════════════════════════════════════════════════════
+
+Implement ALL 5 tools below as real working Python functions.
+Each tool must have a proper JSON schema in schemas.py.
+
+TOOL 1: get_weather(city: str, unit: str = "celsius")
+  - Call the free Open-Meteo API (no key required):
+    https://geocoding-api.open-meteo.com/v1/search?name={city}
+    then https://api.open-meteo.com/v1/forecast with lat/lon
+  - Return: city, temperature, unit, condition, humidity, wind_speed
+  - Schema: city (string, required), unit (enum: celsius/fahrenheit)
+
+TOOL 2: calculate(expression: str, precision: int = 2)
+  - Safely evaluate math expressions using Python's ast module
+    (NEVER use eval() directly — parse the AST and only allow
+     Num, BinOp, UnaryOp, and the operators +,-,*,/,**,%)
+  - Return: expression, result (rounded to precision), steps (list 
+    of intermediate operations shown as strings)
+  - Schema: expression (string, required), precision (int, default 2)
+
+TOOL 3: search_dictionary(word: str, language: str = "en")
+  - Call the free DictionaryAPI: 
+    https://api.dictionaryapi.dev/api/v2/entries/{language}/{word}
+  - Return: word, phonetic, part_of_speech, definitions (top 3),
+    example_sentences (top 2), synonyms (top 5)
+  - Schema: word (string, required), language (string, default "en")
+
+TOOL 4: get_current_time(timezone: str = "UTC")
+  - Use Python's datetime + zoneinfo (stdlib, no external dep)
+  - Return: timezone, current_time (ISO 8601), unix_timestamp,
+    day_of_week, is_weekend, utc_offset
+  - Handle invalid timezone with a clear error message
+  - Schema: timezone (string, default "UTC")
+
+TOOL 5: unit_converter(value: float, from_unit: str, to_unit: str)
+  - Support these category groups:
+      LENGTH: mm, cm, m, km, inch, foot, yard, mile
+      WEIGHT: mg, g, kg, tonne, ounce, pound
+      TEMPERATURE: celsius, fahrenheit, kelvin
+      SPEED: mps, kph, mph, knot
+  - Return: original_value, original_unit, converted_value,
+    converted_unit, category, formula_used
+  - Raise ToolError if units are from different categories
+  - Schema: value (number), from_unit (string), to_unit (string)
+
+═══════════════════════════════════════════════════════════
+SECTION 4 — JSON SCHEMAS (schemas.py)
+═══════════════════════════════════════════════════════════
+
+Define ANTHROPIC_TOOLS as a Python list of dicts matching the 
+exact Anthropic tool schema format:
+
+[
+  {
+    "name": "tool_name",
+    "description": "Clear description Claude uses to decide when to call this",
+    "input_schema": {
+      "type": "object",
+      "properties": { ... },
+      "required": [...]
+    }
+  },
+  ...
+]
+
+Each description must be 2-3 sentences that precisely tell Claude 
+WHEN to use the tool and what it returns.
+
+═══════════════════════════════════════════════════════════
+SECTION 5 — ERROR HANDLING (error_handler.py)
+═══════════════════════════════════════════════════════════
+
+Create a custom exception hierarchy:
+
+class AgentError(Exception): base
+class ToolError(AgentError): tool execution failed
+class SchemaValidationError(AgentError): bad tool input
+class APIError(AgentError): Anthropic API failure
+class NetworkError(AgentError): HTTP/connection failure
+
+Create a ToolErrorResponse Pydantic model:
+  - tool_name: str
+  - error_type: str
+  - error_message: str
+  - suggestion: str  # human-readable fix hint
+  - timestamp: datetime
+
+Create handle_tool_error(tool_name, exception) -> dict function that:
+  - Maps exception types to structured ToolErrorResponse
+  - Logs the error with full traceback to logger
+  - Returns a JSON-serializable dict Claude can read and explain 
+    to the user naturally (don't expose raw tracebacks to Claude)
+
+═══════════════════════════════════════════════════════════
+SECTION 6 — RESPONSE MODELS (response_models.py)
+═══════════════════════════════════════════════════════════
+
+Use Pydantic v2 to define structured output models:
+
+class ToolCall(BaseModel):
+    tool_name: str
+    tool_input: dict
+    tool_result: dict | None
+    error: dict | None
+    execution_time_ms: float
+
+class AgentResponse(BaseModel):
+    user_message: str
+    assistant_text: str
+    tools_called: list[ToolCall]
+    total_input_tokens: int
+    total_output_tokens: int
+    stop_reason: str
+    timestamp: datetime
+
+All models must have model_config = ConfigDict(arbitrary_types_allowed=True)
+
+═══════════════════════════════════════════════════════════
+SECTION 7 — AGENT CLASS (agent.py)
+═══════════════════════════════════════════════════════════
+
+class ToolCallingAgent:
+
+  __init__(self, model="claude-opus-4-5", max_tokens=4096, 
+           max_tool_rounds=10):
+    - Load ANTHROPIC_API_KEY from .env
+    - Initialize anthropic.Anthropic() client
+    - Store model, max_tokens, max_tool_rounds
+    - Initialize conversation_history: list[dict]
+
+  SYSTEM PROMPT (set as a constant in agent.py):
+    You are a helpful, precise AI assistant with access to tools 
+    for weather, math, dictionary lookups, time, and unit conversion.
+    Always use tools when the user's request requires real data.
+    When you call a tool and receive results, synthesize the data 
+    into a natural, informative response. If a tool returns an error,
+    explain the issue clearly and suggest alternatives. Never fabricate 
+    data that a tool should provide.
+
+  run(self, user_message: str) -> AgentResponse:
+    Implement the FULL agentic tool-calling loop:
+
+    1. Append user_message to conversation_history
+    2. Send to Claude with tools=ANTHROPIC_TOOLS
+    3. Check stop_reason:
+       - "end_turn" → extract text, return AgentResponse
+       - "tool_use" → enter tool execution loop:
+           a. Extract all tool_use blocks from response.content
+           b. For EACH tool_use block:
+              - Parse tool name + input
+              - Validate input matches schema (raise SchemaValidationError if not)
+              - Call the real Python function with a timer
+              - Catch all exceptions → handle_tool_error()
+              - Build tool_result content block
+           c. Append assistant message (with tool_use blocks) to history
+           d. Append user message with tool_result blocks to history
+           e. Call Claude again → loop back to step 3
+       - Increment round counter; if > max_tool_rounds raise AgentError
+    4. Track all ToolCall instances throughout the loop
+    5. Return fully populated AgentResponse
+
+  reset_conversation(self):
+    - Clear conversation_history
+
+  get_conversation_summary(self) -> dict:
+    - Return stats: total turns, total tool calls, tools used
+
+═══════════════════════════════════════════════════════════
+SECTION 8 — LOGGER (logger.py)
+═══════════════════════════════════════════════════════════
+
+Use the `rich` library. Create a module-level console = Console().
+
+Functions:
+  log_user(message: str)       → cyan  "You: {message}"
+  log_assistant(message: str)  → green "Agent: {message}"
+  log_tool_call(name, input)   → yellow "⚙ Calling tool: {name}" 
+                                  then dim JSON of input
+  log_tool_result(name, result)→ blue  "✓ Tool result: {name}"
+                                  then dim JSON of result (truncated 
+                                  to 300 chars if long)
+  log_error(message, exc=None) → red   "✗ Error: {message}"
+  log_info(message)            → white dim "[info] {message}"
+
+═══════════════════════════════════════════════════════════
+SECTION 9 — MAIN ENTRY POINT (main.py)
+═══════════════════════════════════════════════════════════
+
+Build an interactive CLI loop using `rich`:
+
+1. Print a styled welcome banner showing:
+   - "Tool-Calling AI Agent" as large title
+   - Available tools list
+   - Commands: /reset, /history, /stats, /quit
+
+2. Prompt user with "> " using rich.prompt.Prompt.ask
+
+3. Handle special commands:
+   /reset    → agent.reset_conversation() + confirmation
+   /history  → print last 10 conversation turns
+   /stats    → print agent.get_conversation_summary() as a table
+   /quit     → exit gracefully
+
+4. For regular input:
+   - Call agent.run(user_input)
+   - Display AgentResponse.assistant_text
+   - If tools were called, print a summary panel:
+       "Tools used: [tool1, tool2] | Tokens: X in / Y out"
+
+5. Wrap everything in try/except:
+   - KeyboardInterrupt → "\nGoodbye!"
+   - AgentError → log_error + continue loop (don't crash)
+   - Any other Exception → log_error with traceback + continue
+
+═══════════════════════════════════════════════════════════
+SECTION 10 — README.md
+═══════════════════════════════════════════════════════════
+
+Write a complete README with:
+1. Project description (3-4 sentences)
+2. Prerequisites (Python 3.11+, pip)
+3. Installation steps:
+     git clone / cd / pip install -r requirements.txt
+     cp .env.example .env → add ANTHROPIC_API_KEY
+4. Usage: python main.py
+5. Example interactions (show 3 real example prompts and 
+   what tools they trigger)
+6. Tool reference table (name | description | example query)
+7. Error handling section explaining the custom exceptions
+8. Project structure overview
+
+═══════════════════════════════════════════════════════════
+SECTION 11 — QUALITY REQUIREMENTS
+═══════════════════════════════════════════════════════════
+
+- Every function must have a complete docstring (Google style)
+- All tool functions must have full type hints
+- No bare except: clauses — catch specific exception types
+- API calls must have timeout=10 seconds
+- Never hardcode the API key anywhere — always use os.getenv()
+- The calculate tool must be safe: parse AST, never call eval()
+- All tool results must be JSON-serializable dicts
+- The agent loop must handle parallel tool calls (Claude may call 
+  multiple tools in one turn — process ALL of them before replying)
+- Test the agent end-to-end with these 5 prompts after building:
+    1. "What's the weather like in Tokyo right now?"
+    2. "Calculate (15.7 * 83) / (2 ** 8) to 4 decimal places"
+    3. "What does 'ephemeral' mean?"
+    4. "What time is it in Istanbul?"
+    5. "Convert 100 miles per hour to km/h and also tell me 
+       what 72 fahrenheit is in celsius"
+  The last prompt must trigger multiple tool calls in one turn.
+
+Build all files now. Do not ask clarifying questions. 
+Do not use placeholder comments like "# implement this". 
+Write complete, working code for every file.
